@@ -363,49 +363,144 @@ def main():
             delta_prior, kappa_prior, A_prior, n_samples
         )
     
-    # Create visualization
-    col1, col2 = st.columns([1, 1])
+    # Create tabs to organize the visualizations
+    tab1, tab2 = st.tabs(["Shapley Value Results", "Prior Distributions"])
     
-    with col1:
-        st.subheader("Shapley Value Distributions")
-        density_chart = create_shapley_distribution_chart(shapley_values)
-        st.altair_chart(density_chart, use_container_width=True)
+    # Tab 1: Shapley Value Results
+    with tab1:
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.subheader("Shapley Value Distributions")
+            density_chart = create_shapley_distribution_chart(shapley_values)
+            st.altair_chart(density_chart, use_container_width=True)
+        
+        with col2:
+            st.subheader("Shapley Value Boxplot")
+            boxplot_chart = create_shapley_boxplot(shapley_values)
+            st.altair_chart(boxplot_chart, use_container_width=True)
+        
+        with col3:
+            # Replace pie chart with a horizontal bar chart for the reward distribution
+            st.subheader("Expected Reward Distribution")
+            mean_shapley_values = {actor: shapley_values[actor].mean() for actor in ACTORS}
+            total = sum(mean_shapley_values.values())
+            percentages = {actor: value/total*100 for actor, value in mean_shapley_values.items()}
+            
+            # Create horizontal bar chart
+            bar_data = pd.DataFrame({
+                "Actor": list(percentages.keys()),
+                "Percentage": list(percentages.values())
+            })
+            
+            # Sort bars in descending order
+            bar_data = bar_data.sort_values("Percentage", ascending=False)
+            
+            bar_chart = alt.Chart(bar_data).mark_bar().encode(
+                y=alt.Y('Actor:N', sort='-x', title=None),
+                x=alt.X('Percentage:Q', title='Percentage (%)'),
+                color=alt.Color('Actor:N', scale=alt.Scale(scheme="category10")),
+                tooltip=[
+                    alt.Tooltip("Actor", title="Actor"),
+                    alt.Tooltip("Percentage", title="Percentage", format=".1f")
+                ]
+            ).properties(
+                title="Expected Reward (%)"
+            )
+            
+            # Add text labels to the bars
+            text = bar_chart.mark_text(
+                align='left',
+                baseline='middle',
+                dx=3  # Offset the text from the bar
+            ).encode(
+                text=alt.Text('Percentage:Q', format='.1f')
+            )
+            
+            # Combine the bar chart and text
+            final_chart = (bar_chart + text)
+            
+            st.altair_chart(final_chart, use_container_width=True)
     
-    with col2:
-        st.subheader("Shapley Value Boxplot")
-        boxplot_chart = create_shapley_boxplot(shapley_values)
-        st.altair_chart(boxplot_chart, use_container_width=True)
-    
-    st.subheader("Shapley Value Summary Statistics")
-    summary_df = create_shapley_summary_table(shapley_values)
-    st.dataframe(summary_df, use_container_width=True)
-    
-    # Add reward distribution visualization
-    st.subheader("Expected Reward Distribution")
-    mean_shapley_values = {actor: shapley_values[actor].mean() for actor in ACTORS}
-    total = sum(mean_shapley_values.values())
-    percentages = {actor: value/total*100 for actor, value in mean_shapley_values.items()}
-    
-    # Create donut chart
-    pie_data = pd.DataFrame({
-        "Actor": list(percentages.keys()),
-        "Percentage": list(percentages.values())
-    })
-    
-    pie_chart = alt.Chart(pie_data).mark_arc(innerRadius=50).encode(
-        theta=alt.Theta(field="Percentage", type="quantitative"),
-        color=alt.Color(field="Actor", type="nominal", scale=alt.Scale(scheme="category10")),
-        tooltip=[
-            alt.Tooltip("Actor", title="Actor"),
-            alt.Tooltip("Percentage", title="Percentage", format=".1f")
-        ]
-    ).properties(
-        width=400,
-        height=400,
-        title="Expected Reward Distribution (%)"
-    )
-    
-    st.altair_chart(pie_chart, use_container_width=True)
+    # Tab 2: Prior Distributions
+    with tab2:
+        # Create function to visualize priors
+        def plot_prior_distribution(name, mean, std, is_lognormal=True):
+            if is_lognormal:
+                # For lognormal priors
+                x = np.linspace(0.001, mean + 4*std, 1000)
+                mu = np.log(mean**2 / np.sqrt(mean**2 + std**2))
+                sigma = np.sqrt(np.log(1 + (std**2 / mean**2)))
+                pdf = sp.stats.lognorm.pdf(x, s=sigma, scale=np.exp(mu))
+            else:
+                # For beta priors
+                x = np.linspace(0.001, 0.999, 1000)
+                var = std**2
+                if var >= mean * (1 - mean):
+                    var = 0.9 * mean * (1 - mean)
+                alpha_param = max(0.01, mean * (mean * (1 - mean) / var - 1))
+                beta_param = max(0.01, (1 - mean) * (mean * (1 - mean) / var - 1))
+                pdf = sp.stats.beta.pdf(x, alpha_param, beta_param)
+            
+            data = pd.DataFrame({
+                'x': x,
+                'density': pdf,
+                'parameter': [name] * len(x)
+            })
+            
+            chart = alt.Chart(data).mark_line().encode(
+                x=alt.X('x', title='Value'),
+                y=alt.Y('density', title='Density'),
+                color=alt.Color('parameter', legend=None)
+            ).properties(
+                height=200,
+                width=200,
+                title=name
+            )
+            return chart
+        
+        st.subheader("Model Parameter Priors")
+        
+        # Use streamlit columns for layout instead of Altair concatenation
+        # Group all parameters
+        all_params = []
+        
+        # Labor contribution priors
+        for actor in ACTORS:
+            name = f"{actor} Labor (α{actor}^L)"
+            mean, std = alpha_labor_priors[actor]
+            all_params.append((name, mean, std, True))
+        
+        # Capital contribution priors
+        for actor in ACTORS:
+            name = f"{actor} Capital (α{actor}^K)"
+            mean, std = alpha_capital_priors[actor]
+            all_params.append((name, mean, std, True))
+        
+        # Gamma priors
+        for actor in ["AI", "CM"]:
+            name = f"{actor} Bonus (γ{actor})"
+            mean, std = gamma_priors[actor]
+            all_params.append((name, mean, std, True))
+        
+        # Delta and Kappa (beta distribution)
+        all_params.append(("Labor Elasticity (δ)", delta_mean, delta_std, False))
+        all_params.append(("Capital Elasticity (κ)", kappa_mean, kappa_std, False))
+        
+        # Total Factor Productivity (lognormal)
+        all_params.append(("TFP (A)", A_mean, A_std, True))
+        
+        # Create a 3-column layout
+        # Divide all parameters into rows with 3 params each
+        charts_per_row = 3
+        for i in range(0, len(all_params), charts_per_row):
+            cols = st.columns(charts_per_row)
+            for j in range(charts_per_row):
+                if i + j < len(all_params):
+                    name, mean, std, is_lognormal = all_params[i + j]
+                    with cols[j]:
+                        chart = plot_prior_distribution(name, mean, std, is_lognormal)
+                        st.altair_chart(chart, use_container_width=True)
 
 if __name__ == "__main__":
     main() 
