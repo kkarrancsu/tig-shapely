@@ -1,3 +1,3 @@
 #! /bin/bash
 
-streamlit run shapely_hmc.py --server.headless true
+streamlit run shapely_cobbdouglas.py --server.headless true
