@@ -17,33 +17,41 @@ def powerset(iterable: List[str]) -> List[Tuple[str, ...]]:
 
 def compute_coalition_value(
     coalition: Tuple[str, ...], 
-    alphas: Dict[str, float], 
+    alpha_labor: Dict[str, float],
+    alpha_capital: Dict[str, float],
     gammas: Dict[str, float],
-    betas: Dict[str, float],
-    k: float
+    delta: float,  # Labor elasticity
+    kappa: float,  # Capital elasticity
+    A: float       # Total factor productivity
 ) -> float:
     if not coalition:
         return 0
 
-    # Initialize the product for Cobb-Douglas
-    product = k
-    
-    # Calculate the contribution of each actor in the coalition
+    # Calculate labor contribution for each actor in the coalition
+    labor = 0
     for actor in coalition:
         if actor in ["AI", "CM"]:
             # For actors with gamma factors
-            product *= (alphas[actor] * (1 + gammas[actor])) ** betas[actor]
+            labor += alpha_labor[actor] * (1 + gammas[actor])
         else:
             # For actors without gamma factors
-            product *= alphas[actor] ** betas[actor]
+            labor += alpha_labor[actor]
     
-    return product
+    # Calculate capital contribution for each actor in the coalition
+    capital = 0
+    for actor in coalition:
+        capital += alpha_capital[actor]
+    
+    # Apply Cobb-Douglas function: A * L^delta * K^kappa
+    return A * (labor ** delta) * (capital ** kappa)
 
 def compute_shapley_values(
-    alphas: Dict[str, float], 
+    alpha_labor: Dict[str, float],
+    alpha_capital: Dict[str, float],
     gammas: Dict[str, float],
-    betas: Dict[str, float],
-    k: float
+    delta: float,
+    kappa: float,
+    A: float
 ) -> Dict[str, float]:
     n = len(ACTORS)
     shapley_values = {actor: 0.0 for actor in ACTORS}
@@ -60,85 +68,109 @@ def compute_shapley_values(
                 coalition_tuple = tuple(coalition)
                 coalition_with_actor = tuple(coalition.union({actor}))
                 
-                marginal = compute_coalition_value(coalition_with_actor, alphas, gammas, betas, k) - \
-                           compute_coalition_value(coalition_tuple, alphas, gammas, betas, k)
+                marginal = compute_coalition_value(coalition_with_actor, alpha_labor, alpha_capital, gammas, delta, kappa, A) - \
+                           compute_coalition_value(coalition_tuple, alpha_labor, alpha_capital, gammas, delta, kappa, A)
                 
                 shapley_values[actor] += weight * marginal
     
     return shapley_values
 
 def sample_hmc_parameters(
-    alpha_priors: Dict[str, Tuple[float, float]],
+    alpha_labor_priors: Dict[str, Tuple[float, float]],
+    alpha_capital_priors: Dict[str, Tuple[float, float]],
     gamma_priors: Dict[str, Tuple[float, float]],
-    beta_priors: Dict[str, Tuple[float, float]],
-    k_prior: Tuple[float, float],
+    delta_prior: Tuple[float, float],
+    kappa_prior: Tuple[float, float],
+    A_prior: Tuple[float, float],
     n_samples: int
-) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], np.ndarray]:
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
     with pm.Model() as model:
-        # Sample alphas (using lognormal to ensure positivity)
-        alphas = {}
-        for actor, (mean, std) in alpha_priors.items():
-            # Convert normal mean, std to lognormal parameters
+        # Sample alpha labor (using lognormal to ensure positivity)
+        alpha_labor = {}
+        for actor, (mean, std) in alpha_labor_priors.items():
             mu = np.log(mean**2 / np.sqrt(mean**2 + std**2))
             sigma = np.sqrt(np.log(1 + (std**2 / mean**2)))
-            alphas[actor] = pm.Lognormal(f"alpha_{actor}", mu=mu, sigma=sigma)
+            alpha_labor[actor] = pm.Lognormal(f"alpha_labor_{actor}", mu=mu, sigma=sigma)
+        
+        # Sample alpha capital (using lognormal to ensure positivity)
+        alpha_capital = {}
+        for actor, (mean, std) in alpha_capital_priors.items():
+            mu = np.log(mean**2 / np.sqrt(mean**2 + std**2))
+            sigma = np.sqrt(np.log(1 + (std**2 / mean**2)))
+            alpha_capital[actor] = pm.Lognormal(f"alpha_capital_{actor}", mu=mu, sigma=sigma)
         
         # Sample gammas (using lognormal to ensure positivity)
         gammas = {}
         for actor, (mean, std) in gamma_priors.items():
-            # Convert normal mean, std to lognormal parameters
             mu = np.log(mean**2 / np.sqrt(mean**2 + std**2))
             sigma = np.sqrt(np.log(1 + (std**2 / mean**2)))
             gammas[actor] = pm.Lognormal(f"gamma_{actor}", mu=mu, sigma=sigma)
         
-        # Sample betas (using beta distribution bounded 0-1)
-        betas = {}
-        for actor, (mean, std) in beta_priors.items():
-            # Convert mean and std to alpha and beta parameters
-            var = std**2
-            if var >= mean * (1 - mean):
-                var = 0.9 * mean * (1 - mean)
-            
-            alpha_param = mean * (mean * (1 - mean) / var - 1)
-            beta_param = (1 - mean) * (mean * (1 - mean) / var - 1)
-            
-            # Ensure alpha and beta parameters are valid
-            alpha_param = max(0.01, alpha_param)
-            beta_param = max(0.01, beta_param)
-            
-            betas[actor] = pm.Beta(f"beta_{actor}", alpha=alpha_param, beta=beta_param)
+        # Sample delta and kappa (using beta distribution bounded 0-1)
+        delta_mean, delta_std = delta_prior
+        var = delta_std**2
+        if var >= delta_mean * (1 - delta_mean):
+            var = 0.9 * delta_mean * (1 - delta_mean)
         
-        # Sample k (using lognormal to ensure positivity)
-        k_mean, k_std = k_prior
-        mu = np.log(k_mean**2 / np.sqrt(k_mean**2 + k_std**2))
-        sigma = np.sqrt(np.log(1 + (k_std**2 / k_mean**2)))
-        k = pm.Lognormal("k", mu=mu, sigma=sigma)
+        alpha_param = delta_mean * (delta_mean * (1 - delta_mean) / var - 1)
+        beta_param = (1 - delta_mean) * (delta_mean * (1 - delta_mean) / var - 1)
+        
+        # Ensure alpha and beta parameters are valid
+        alpha_param = max(0.01, alpha_param)
+        beta_param = max(0.01, beta_param)
+        
+        delta = pm.Beta("delta", alpha=alpha_param, beta=beta_param)
+        
+        kappa_mean, kappa_std = kappa_prior
+        var = kappa_std**2
+        if var >= kappa_mean * (1 - kappa_mean):
+            var = 0.9 * kappa_mean * (1 - kappa_mean)
+        
+        alpha_param = kappa_mean * (kappa_mean * (1 - kappa_mean) / var - 1)
+        beta_param = (1 - kappa_mean) * (kappa_mean * (1 - kappa_mean) / var - 1)
+        
+        # Ensure alpha and beta parameters are valid
+        alpha_param = max(0.01, alpha_param)
+        beta_param = max(0.01, beta_param)
+        
+        kappa = pm.Beta("kappa", alpha=alpha_param, beta=beta_param)
+        
+        # Sample A (using lognormal to ensure positivity)
+        A_mean, A_std = A_prior
+        mu = np.log(A_mean**2 / np.sqrt(A_mean**2 + A_std**2))
+        sigma = np.sqrt(np.log(1 + (A_std**2 / A_mean**2)))
+        A = pm.Lognormal("A", mu=mu, sigma=sigma)
         
         # Use No-U-Turn Sampler (NUTS) for efficient HMC sampling
         trace = pm.sample(n_samples, tune=1000, chains=2, cores=1, return_inferencedata=True)
     
     # Extract samples from the trace
-    alpha_samples = {actor: trace.posterior[f"alpha_{actor}"].values.flatten() for actor in ACTORS}
+    alpha_labor_samples = {actor: trace.posterior[f"alpha_labor_{actor}"].values.flatten() for actor in ACTORS}
+    alpha_capital_samples = {actor: trace.posterior[f"alpha_capital_{actor}"].values.flatten() for actor in ACTORS}
     gamma_samples = {actor: trace.posterior[f"gamma_{actor}"].values.flatten() for actor in ["AI", "CM"]}
-    beta_samples = {actor: trace.posterior[f"beta_{actor}"].values.flatten() for actor in ACTORS}
-    k_samples = trace.posterior["k"].values.flatten()
+    delta_samples = trace.posterior["delta"].values.flatten()
+    kappa_samples = trace.posterior["kappa"].values.flatten()
+    A_samples = trace.posterior["A"].values.flatten()
     
-    return alpha_samples, gamma_samples, beta_samples, k_samples
+    return alpha_labor_samples, alpha_capital_samples, gamma_samples, delta_samples, kappa_samples, A_samples
 
 def compute_hmc_shapley_values(
-    alpha_priors: Dict[str, Tuple[float, float]],
+    alpha_labor_priors: Dict[str, Tuple[float, float]],
+    alpha_capital_priors: Dict[str, Tuple[float, float]],
     gamma_priors: Dict[str, Tuple[float, float]],
-    beta_priors: Dict[str, Tuple[float, float]],
-    k_prior: Tuple[float, float],
+    delta_prior: Tuple[float, float],
+    kappa_prior: Tuple[float, float],
+    A_prior: Tuple[float, float],
     n_samples: int
 ) -> Dict[str, np.ndarray]:
     # Sample parameters using HMC
-    alphas, gammas, betas, k = sample_hmc_parameters(
-        alpha_priors, gamma_priors, beta_priors, k_prior, n_samples
+    alpha_labor, alpha_capital, gammas, delta, kappa, A = sample_hmc_parameters(
+        alpha_labor_priors, alpha_capital_priors, gamma_priors, 
+        delta_prior, kappa_prior, A_prior, n_samples
     )
     
     # Truncate to the requested number of samples
-    n_samples = min(n_samples, len(k))
+    n_samples = min(n_samples, len(A))
     
     # Initialize arrays for Shapley values
     shapley_values = {actor: np.zeros(n_samples) for actor in ACTORS}
@@ -146,14 +178,17 @@ def compute_hmc_shapley_values(
     # Compute Shapley values for each sample
     for i in range(n_samples):
         # Extract parameters for this sample
-        alpha_sample = {actor: alphas[actor][i] for actor in ACTORS}
+        alpha_labor_sample = {actor: alpha_labor[actor][i] for actor in ACTORS}
+        alpha_capital_sample = {actor: alpha_capital[actor][i] for actor in ACTORS}
         gamma_sample = {actor: gammas[actor][i] for actor in ["AI", "CM"]}
-        beta_sample = {actor: betas[actor][i] for actor in ACTORS}
-        k_sample = k[i]
+        delta_sample = delta[i]
+        kappa_sample = kappa[i]
+        A_sample = A[i]
         
         # Compute Shapley values for this sample
         shapley_values_sample = compute_shapley_values(
-            alpha_sample, gamma_sample, beta_sample, k_sample
+            alpha_labor_sample, alpha_capital_sample, gamma_sample, 
+            delta_sample, kappa_sample, A_sample
         )
         
         # Store results
@@ -241,21 +276,10 @@ def main():
     st.set_page_config(layout="wide", page_title="TIG Shapley Value Simulation")
     
     st.title("TIG Shapley Value Simulation with Cobb-Douglas Model")
-    st.markdown("""
-    This application simulates reward allocation using Shapley values for four key actors in the TIG ecosystem using a Cobb-Douglas production model:
-    """)
     
-    st.latex(r"Y = k \cdot \alpha_B^{\beta_B} \cdot \alpha_{CI}^{\beta_{CI}} \cdot (\alpha_{AI} \cdot (1+\gamma_{AI}))^{\beta_{AI}} \cdot (\alpha_{CM} \cdot (1+\gamma_{CM}))^{\beta_{CM}}")
+    st.write("This application simulates reward allocation using Shapley values for four key actors in the TIG ecosystem. Visit the 'Explanation' page to learn more about the model.")
     
-    st.markdown("""
-    Where:
-    - **Benchmarkers (B)**
-    - **Code Innovators (CI)**
-    - **Algorithm Innovators (AI)**
-    - **Challenge Maintainers (CM)**
-    
-    The simulation uses Hamiltonian Monte Carlo to sample from prior distributions.
-    """)
+    st.latex(r"Y = A \cdot L^{\delta} \cdot K^{\kappa}")
     
     # Sidebar configuration
     with st.sidebar:
@@ -264,19 +288,32 @@ def main():
         st.subheader("Simulation Settings")
         n_samples = st.slider("Number of HMC samples", 50, 1000, 200, 50)
         
-        st.subheader("Base Contributions (α) Priors")
-        alpha_B_mean = st.number_input("Benchmarkers (αB) Mean", 0.1, 5.0, 1.0, 0.1)
-        alpha_B_std = st.number_input("Benchmarkers (αB) Std", 0.01, 2.0, 0.2, 0.05)
+        st.subheader("Labor Contribution (α^L) Priors")
+        alpha_B_L_mean = st.number_input("Benchmarkers (αB^L) Mean", 0.1, 5.0, 1.0, 0.1)
+        alpha_B_L_std = st.number_input("Benchmarkers (αB^L) Std", 0.01, 2.0, 0.2, 0.05)
         
-        alpha_CI_mean = st.number_input("Code Innovators (αCI) Mean", 0.1, 5.0, 1.0, 0.1)
-        alpha_CI_std = st.number_input("Code Innovators (αCI) Std", 0.01, 2.0, 0.2, 0.05)
+        alpha_CI_L_mean = st.number_input("Code Innovators (αCI^L) Mean", 0.1, 5.0, 1.0, 0.1)
+        alpha_CI_L_std = st.number_input("Code Innovators (αCI^L) Std", 0.01, 2.0, 0.2, 0.05)
         
-        alpha_AI_mean = st.number_input("Algorithm Innovators (αAI) Mean", 0.1, 5.0, 2.0, 0.1)
-        alpha_AI_std = st.number_input("Algorithm Innovators (αAI) Std", 0.01, 2.0, 0.2, 0.05)
+        alpha_AI_L_mean = st.number_input("Algorithm Innovators (αAI^L) Mean", 0.1, 5.0, 2.0, 0.1)
+        alpha_AI_L_std = st.number_input("Algorithm Innovators (αAI^L) Std", 0.01, 2.0, 0.2, 0.05)
         
-        alpha_CM_mean = st.number_input("Challenge Maintainers (αCM) Mean", 0.1, 5.0, 2.0, 0.1)
-        alpha_CM_std = st.number_input("Challenge Maintainers (αCM) Std", 0.01, 2.0, 0.2, 0.05)
+        alpha_CM_L_mean = st.number_input("Challenge Maintainers (αCM^L) Mean", 0.1, 5.0, 2.0, 0.1)
+        alpha_CM_L_std = st.number_input("Challenge Maintainers (αCM^L) Std", 0.01, 2.0, 0.2, 0.05)
 
+        st.subheader("Capital Contribution (α^K) Priors")
+        alpha_B_K_mean = st.number_input("Benchmarkers (αB^K) Mean", 0.1, 5.0, 2.0, 0.1)
+        alpha_B_K_std = st.number_input("Benchmarkers (αB^K) Std", 0.01, 2.0, 0.2, 0.05)
+        
+        alpha_CI_K_mean = st.number_input("Code Innovators (αCI^K) Mean", 0.1, 5.0, 0.5, 0.1)
+        alpha_CI_K_std = st.number_input("Code Innovators (αCI^K) Std", 0.01, 2.0, 0.1, 0.05)
+        
+        alpha_AI_K_mean = st.number_input("Algorithm Innovators (αAI^K) Mean", 0.1, 5.0, 0.5, 0.1)
+        alpha_AI_K_std = st.number_input("Algorithm Innovators (αAI^K) Std", 0.01, 2.0, 0.1, 0.05)
+        
+        alpha_CM_K_mean = st.number_input("Challenge Maintainers (αCM^K) Mean", 0.1, 5.0, 0.5, 0.1)
+        alpha_CM_K_std = st.number_input("Challenge Maintainers (αCM^K) Std", 0.01, 2.0, 0.1, 0.05)
+        
         st.subheader("Bonus Factors (γ) Priors")
         gamma_AI_mean = st.number_input("Algorithm Innovators (γAI) Mean", 0.0, 5.0, 2.0, 0.1)
         gamma_AI_std = st.number_input("Algorithm Innovators (γAI) Std", 0.01, 2.0, 0.2, 0.05)
@@ -284,30 +321,30 @@ def main():
         gamma_CM_mean = st.number_input("Challenge Maintainers (γCM) Mean", 0.0, 5.0, 1.0, 0.1)
         gamma_CM_std = st.number_input("Challenge Maintainers (γCM) Std", 0.01, 2.0, 0.2, 0.05)
         
-        st.subheader("Elasticity Parameters (β) Priors")
-        st.write("Beta distribution parameters (must be between 0 and 1)")
-        beta_B_mean = st.slider("Benchmarkers (βB) Mean", 0.01, 0.99, 0.25, 0.01)
-        beta_B_std = st.slider("Benchmarkers (βB) Std", 0.01, 0.5, 0.1, 0.01)
+        st.subheader("Production Function Parameters")
+        delta_mean = st.slider("Labor Elasticity (δ) Mean", 0.01, 0.99, 0.6, 0.01)
+        delta_std = st.slider("Labor Elasticity (δ) Std", 0.01, 0.3, 0.1, 0.01)
         
-        beta_CI_mean = st.slider("Code Innovators (βCI) Mean", 0.01, 0.99, 0.25, 0.01)
-        beta_CI_std = st.slider("Code Innovators (βCI) Std", 0.01, 0.5, 0.1, 0.01)
+        kappa_mean = st.slider("Capital Elasticity (κ) Mean", 0.01, 0.99, 0.4, 0.01)
+        kappa_std = st.slider("Capital Elasticity (κ) Std", 0.01, 0.3, 0.1, 0.01)
         
-        beta_AI_mean = st.slider("Algorithm Innovators (βAI) Mean", 0.01, 0.99, 0.25, 0.01)
-        beta_AI_std = st.slider("Algorithm Innovators (βAI) Std", 0.01, 0.5, 0.1, 0.01)
-        
-        beta_CM_mean = st.slider("Challenge Maintainers (βCM) Mean", 0.01, 0.99, 0.25, 0.01)
-        beta_CM_std = st.slider("Challenge Maintainers (βCM) Std", 0.01, 0.5, 0.1, 0.01)
-        
-        st.subheader("Scaling Factor (k) Prior")
-        k_mean = st.number_input("Scaling Factor (k) Mean", 0.1, 10.0, 1.0, 0.1)
-        k_std = st.number_input("Scaling Factor (k) Std", 0.01, 5.0, 0.2, 0.05)
+        st.subheader("Total Factor Productivity (A) Prior")
+        A_mean = st.number_input("Total Factor Productivity (A) Mean", 0.1, 10.0, 1.0, 0.1)
+        A_std = st.number_input("Total Factor Productivity (A) Std", 0.01, 5.0, 0.2, 0.05)
     
     # Prepare priors
-    alpha_priors = {
-        "B": (alpha_B_mean, alpha_B_std),
-        "CI": (alpha_CI_mean, alpha_CI_std),
-        "AI": (alpha_AI_mean, alpha_AI_std),
-        "CM": (alpha_CM_mean, alpha_CM_std)
+    alpha_labor_priors = {
+        "B": (alpha_B_L_mean, alpha_B_L_std),
+        "CI": (alpha_CI_L_mean, alpha_CI_L_std),
+        "AI": (alpha_AI_L_mean, alpha_AI_L_std),
+        "CM": (alpha_CM_L_mean, alpha_CM_L_std)
+    }
+    
+    alpha_capital_priors = {
+        "B": (alpha_B_K_mean, alpha_B_K_std),
+        "CI": (alpha_CI_K_mean, alpha_CI_K_std),
+        "AI": (alpha_AI_K_mean, alpha_AI_K_std),
+        "CM": (alpha_CM_K_mean, alpha_CM_K_std)
     }
     
     gamma_priors = {
@@ -315,19 +352,15 @@ def main():
         "CM": (gamma_CM_mean, gamma_CM_std)
     }
     
-    beta_priors = {
-        "B": (beta_B_mean, beta_B_std),
-        "CI": (beta_CI_mean, beta_CI_std),
-        "AI": (beta_AI_mean, beta_AI_std),
-        "CM": (beta_CM_mean, beta_CM_std)
-    }
-    
-    k_prior = (k_mean, k_std)
+    delta_prior = (delta_mean, delta_std)
+    kappa_prior = (kappa_mean, kappa_std)
+    A_prior = (A_mean, A_std)
     
     # Start HMC sampling with progress indicator
     with st.spinner("Running Hamiltonian Monte Carlo sampling... This may take a few minutes."):
         shapley_values = compute_hmc_shapley_values(
-            alpha_priors, gamma_priors, beta_priors, k_prior, n_samples
+            alpha_labor_priors, alpha_capital_priors, gamma_priors, 
+            delta_prior, kappa_prior, A_prior, n_samples
         )
     
     # Create visualization
@@ -375,4 +408,4 @@ def main():
     st.altair_chart(pie_chart, use_container_width=True)
 
 if __name__ == "__main__":
-    main()
+    main() 
