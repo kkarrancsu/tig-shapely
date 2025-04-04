@@ -9,17 +9,17 @@ def main():
     st.markdown("""
     ## Problem Context
     
-    In TIG, multiple actors with different roles collaborate to drive progress. In this simulation, we ask: how should rewards be distributed 
-    fairly among contributors when their inputs are qualitatively different but interdependent?
+    In TIG, multiple actors with different roles collaborate to drive progress. In this framework, we explore: how should rewards be distributed 
+    fairly among contributors when their inputs to the network are different, but interdependent?
     
-    The four key actor groups in this ecosystem are:
+    The four actors in TIG are:
     
-    - **Benchmarkers (B)**: Create standardized tests to measure AI capabilities
-    - **Code Innovators (CI)**: Develop implementation techniques and software infrastructure
-    - **Algorithm Innovators (AI)**: Invent new mathematical approaches and methods
+    - **Benchmarkers (B)**: Evaluate and run algorithms created by other actors for various challenges
+    - **Code Innovators (CI)**: Develop efficient implementations of algorithms
+    - **Algorithm Innovators (AI)**: Invent new mathematical approaches to challenges
     - **Challenge Maintainers (CM)**: Manage the benchmarks and foster the competitive ecosystem
     
-    Each group contributes differently to the overall value creation, but they all depend on each other. For example, 
+    Each group contributes differently to the overall value creation, but all are part of the ecosystem. For example, 
     algorithm innovations are only valuable when they can be implemented in code and tested against benchmarks.
     """)
 
@@ -42,17 +42,12 @@ def main():
     - $v$ is the characteristic function that assigns a value to each coalition
     - $v(S)$ is the value produced by coalition $S$
     
-    In our model, the characteristic function $v$ is the Cobb-Douglas production function (described below). This calculation 
-    essentially averages an actor's marginal contribution across all possible ways the coalition could form, 
-    weighting each formation sequence equally.
+    In our model, the characteristic function $v$ is the Cobb-Douglas production function (described below).
     
-    Shapley values tell us:
-    
-    - How much each actor group should be rewarded relative to others
-    - Which actor groups provide the most critical marginal value
-    - How rewards should change as parameters in the model change
-    
-    This provides guidance for funding allocation, recognition distribution, and incentive design in the AI ecosystem.
+    Shapley values can then be translated to: 
+    - how much each actor group should be rewarded relative to others, 
+    - which actor groups provide the most critical marginal value, and 
+    - how rewards should change as parameters in the model change.
     """)
     
     # Why Cobb-Douglas is appropriate
@@ -162,8 +157,7 @@ def main():
     3. The relationships between parameters and rewards
     4. The robustness of the reward allocation to parameter changes
     
-    This probabilistic approach provides a more nuanced and complete picture than a deterministic calculation,
-    capturing both the most likely outcomes and the range of possible variations.
+    The primary difficulty in this approach is how to set the prior distributions for the parameters.
     """)
 
 if __name__ == "__main__":
